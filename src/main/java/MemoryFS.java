@@ -9,12 +9,13 @@ import jnr.ffi.types.mode_t;
 import jnr.ffi.types.off_t;
 import jnr.ffi.types.size_t;
 import util.MemoryINode;
+import util.MemoryINodeDir;
 import util.MemoryINodeTable;
 import util.MemoryVisualiser;
 
-import java.io.File;
 import java.io.IOException;
-import java.util.Objects;
+import java.time.Instant;
+import java.util.*;
 
 import com.sun.security.auth.module.UnixSystem;
 
@@ -29,6 +30,7 @@ public class MemoryFS extends FileSystemStub {
     private MemoryINodeTable iNodeTable = new MemoryINodeTable();
     private MemoryVisualiser visualiser;
     private UnixSystem unix = new UnixSystem();
+
 
     @Override
     public Pointer init(Pointer conn) {
@@ -67,7 +69,18 @@ public class MemoryFS extends FileSystemStub {
             stat.st_gid.set(unix.getGid());
             stat.st_uid.set(unix.getUid());
 
+            stat.st_nlink.set(savedStat.st_nlink.intValue());
 
+
+            // time
+            stat.st_atim.tv_nsec.set(savedStat.st_atim.tv_nsec.intValue());
+            stat.st_atim.tv_sec.set(savedStat.st_atim.tv_sec.floatValue());
+
+            stat.st_atim.tv_sec.set(savedStat.st_atim.tv_sec.get());
+            stat.st_atim.tv_nsec.set(savedStat.st_atim.tv_nsec.intValue());
+
+            stat.st_ctim.tv_sec.set(savedStat.st_ctim.tv_sec.get());
+            stat.st_ctim.tv_nsec.set(savedStat.st_ctim.tv_nsec.intValue());
 
         } else {
             res = -ErrorCodes.ENOENT();
@@ -87,14 +100,15 @@ public class MemoryFS extends FileSystemStub {
         filler.apply(buf, ".", null, 0);
         filler.apply(buf, "..", null, 0);
 
-        File directory = new File(path);
-        File[] listFiles = directory.listFiles();
 
-        if(listFiles!=null) {
-            for (File f : listFiles) {
-                FileStat stat = iNodeTable.getINode(f.getPath()).getStat();
-                filler.apply(buf, f.getName(), stat, 0);
-            }
+        Set<String> entries = iNodeTable.entries();
+
+        for (String p: entries){
+
+            String[] filePaths = p.split("/");
+            String filename = filePaths[filePaths.length-1];
+            filler.apply(buf,filename,iNodeTable.getINode(p).getStat(),0);
+
         }
 
         return 0;
@@ -118,7 +132,19 @@ public class MemoryFS extends FileSystemStub {
         // you need to extract data from the content field of the inode and place it in the buffer
         // something like:
         // buf.put(0, content, offset, amount);
-        int amount = 0;
+
+
+        MemoryINode node = iNodeTable.getINode(path);
+        byte[] content = node.getContent();
+        int amount = content.length - (int) offset;
+
+        FileStat stat = node.getStat();
+
+        Instant instant = Instant.now();
+        stat.st_atim.tv_sec.set(instant.getEpochSecond());
+        stat.st_atim.tv_nsec.set(instant.getNano());
+
+        buf.put(0,content,(int)offset,amount);
 
         if (isVisualised()) {
             visualiser.sendINodeTable(iNodeTable);
@@ -135,11 +161,46 @@ public class MemoryFS extends FileSystemStub {
         // similar to read but you get data from the buffer like:
         // buf.get(0, content, offset, size);
 
+        MemoryINode node = iNodeTable.getINode(path);
+        byte[] content = node.getContent();
+
+        node.setContent(java.util.Arrays.copyOf(content, node.getContent().length+(int)size));
+        FileStat stat = node.getStat();
+        Instant instant = Instant.now();
+        stat.st_mtim.tv_sec.set(instant.getEpochSecond());
+        stat.st_mtim.tv_nsec.set(instant.getNano());
+
+        node.getStat().st_size.set((int) offset + size);
+        buf.get(0, node.getContent(), (int) offset, (int) size);
+
         if (isVisualised()) {
             visualiser.sendINodeTable(iNodeTable);
         }
 
         return (int) size;
+    }
+
+    private FileStat createFileStat(int contentLength, long mode, long rdev){
+
+        FileStat stat = new FileStat(Runtime.getSystemRuntime());
+
+        stat.st_mode.set(mode);
+        stat.st_dev.set(rdev);
+        stat.st_size.set(contentLength);
+        stat.st_nlink.set(1);
+
+        Instant instant = Instant.now();
+
+        //modification time
+        stat.st_mtim.tv_sec.set(instant.getEpochSecond());
+        stat.st_mtim.tv_nsec.set(instant.getNano());
+        //access time
+        stat.st_atim.tv_sec.set(instant.getEpochSecond());
+        stat.st_atim.tv_nsec.set(instant.getNano());
+        //change time
+        stat.st_ctim.tv_sec.set(instant.getEpochSecond());
+        stat.st_ctim.tv_nsec.set(instant.getNano());
+        return stat;
     }
 
     @Override
@@ -150,6 +211,9 @@ public class MemoryFS extends FileSystemStub {
 
         MemoryINode mockINode = new MemoryINode();
         // set up the stat information for this inode
+
+        FileStat stat = createFileStat(mockINode.getContent().length, mode, rdev);
+        mockINode.setStat(stat);
 
         iNodeTable.updateINode(path, mockINode);
 
@@ -180,6 +244,17 @@ public class MemoryFS extends FileSystemStub {
     
     @Override
     public int link(java.lang.String oldpath, java.lang.String newpath) {
+
+
+        if (!iNodeTable.containsINode(oldpath) && !iNodeTable.containsINode(newpath)) {
+            return -ErrorCodes.ENOENT(); // ENONET();
+        }
+
+        MemoryINode node = iNodeTable.getINode(oldpath);
+        FileStat stat = node.getStat();
+        stat.st_nlink.set(stat.st_nlink.intValue() + 1);
+        iNodeTable.updateINode(newpath,node);
+
         return 0;
     }
 
@@ -189,11 +264,22 @@ public class MemoryFS extends FileSystemStub {
             return -ErrorCodes.ENONET();
         }
         // delete the file if there are no more hard links
+
+        MemoryINode node = iNodeTable.getINode(path);
+        FileStat stat = node.getStat();
+
+        stat.st_nlink.set(stat.st_nlink.intValue() - 1 );
+        iNodeTable.removeINode(path);
+
         return 0;
     }
 
     @Override
     public int mkdir(String path, long mode) {
+        MemoryINode node = new MemoryINodeDir();
+        FileStat stat = createFileStat(node.getContent().length, mode|FileStat.S_IFDIR, 0);
+        node.setStat(stat);
+        iNodeTable.updateINode(path, node);
         return 0;
     }
 
