@@ -399,7 +399,7 @@ public class MemoryFS extends FileSystemStub {
     public static void main(String[] args) {
         MemoryFS fs = new MemoryFS();
         try {
-            fs.mount(args, false);
+            fs.mount(args, true);
         } finally {
             fs.unmount();
         }
