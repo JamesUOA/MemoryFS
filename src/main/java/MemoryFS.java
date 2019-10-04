@@ -87,7 +87,6 @@ public class MemoryFS extends FileSystemStub {
         }
         return res;
     }
-
     @Override
     public int readdir(String path, Pointer buf, FuseFillDir filler, @off_t long offset, FuseFileInfo fi) {
         // For each file in the directory call filler.apply.
@@ -96,21 +95,26 @@ public class MemoryFS extends FileSystemStub {
         //      buf - a pointer to a buffer for the directory entries
         //      name - the file name (with no "/" at the beginning)
         //      stbuf - the FileStat information for the file
-        //      off - just use 0
-        filler.apply(buf, ".", null, 0);
-        filler.apply(buf, "..", null, 0);
+        //      off - just
+        for(String node:iNodeTable.entries()){
+            boolean is_valid = true;
+            String[] nodeSplit = node.split("(?<=/)");
+            String[] pathSplit = path.split("(?<=/)");
+            
+            for(int i=0;i<pathSplit.length;i++){
+                if ((!nodeSplit[i].equals(pathSplit[i])) ||
+                        nodeSplit.length <= pathSplit.length ||
+                        nodeSplit.length > (pathSplit.length + 1)) {
+                    is_valid = false;
+                    break;
+                }
+            }
 
-
-        Set<String> entries = iNodeTable.entries();
-
-        for (String p: entries){
-
-            String[] filePaths = p.split("/");
-            String filename = filePaths[filePaths.length-1];
-            filler.apply(buf,filename,iNodeTable.getINode(p).getStat(),0);
-
+            if(is_valid){
+                MemoryINode iNode = iNodeTable.getINode(node);
+                filler.apply(buf, node.substring(node.lastIndexOf('/') + 1), iNode.getStat(), 0);
+            }
         }
-
         return 0;
     }
 
