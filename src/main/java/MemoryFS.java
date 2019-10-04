@@ -115,9 +115,10 @@ public class MemoryFS extends FileSystemStub {
                 MemoryINode iNode = table.getINode(node);
                 filler.apply(buf, node.substring(node.lastIndexOf('/') + 1), iNode.getStat(), 0);
             }
-            filler.apply(buf,".",null,0);
-            filler.apply(buf,"..",null,0);
+
         }
+        filler.apply(buf,".",null,0);
+        filler.apply(buf,"..",null,0);
         return 0;
     }
 
