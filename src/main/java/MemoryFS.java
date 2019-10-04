@@ -27,7 +27,8 @@ public class MemoryFS extends FileSystemStub {
     private static final String HELLO_PATH = "/hello";
     private static final String HELLO_STR = "Hello World!\n";
 
-    private MemoryINodeTable iNodeTable = new MemoryINodeTable();
+
+    private MemoryINodeDir root = new MemoryINodeDir();
     private MemoryVisualiser visualiser;
     private UnixSystem unix = new UnixSystem();
 
@@ -37,17 +38,15 @@ public class MemoryFS extends FileSystemStub {
 
         // setup an example file for testing purposes
         MemoryINode iNode = new MemoryINode();
-        FileStat stat = new FileStat(Runtime.getSystemRuntime());
+        FileStat stat = createFileStat(HELLO_PATH.getBytes().length,FileStat.S_IFREG | 0444 | 0200, 0);
         // you will have to add more stat information here eventually
-        stat.st_mode.set(FileStat.S_IFREG | 0444 | 0200);
-        stat.st_size.set(HELLO_STR.getBytes().length);
         iNode.setStat(stat);
         iNode.setContent(HELLO_STR.getBytes());
-        iNodeTable.updateINode(HELLO_PATH, iNode);
+        root.updateINode(HELLO_PATH, iNode);
 
         if (isVisualised()) {
             visualiser = new MemoryVisualiser();
-            visualiser.sendINodeTable(iNodeTable);
+            visualiser.sendINodeTable(root.getiNodeTable());
         }
 
         return conn;
@@ -56,11 +55,12 @@ public class MemoryFS extends FileSystemStub {
     @Override
     public int getattr(String path, FileStat stat) {
         int res = 0;
+        MemoryINodeTable table = getParentDir(path);
         if (Objects.equals(path, "/")) { // minimal set up for the mount point root
             stat.st_mode.set(FileStat.S_IFDIR | 0755);
             stat.st_nlink.set(2);
-        } else if (iNodeTable.containsINode(path)) {
-            FileStat savedStat = iNodeTable.getINode(path).getStat();
+        } else if (table.containsINode(path)) {
+            FileStat savedStat = table.getINode(path).getStat();
             // fill in the stat object with values from the savedStat object of your inode
             stat.st_mode.set(savedStat.st_mode.intValue());
             stat.st_size.set(savedStat.st_size.intValue());
@@ -73,8 +73,8 @@ public class MemoryFS extends FileSystemStub {
 
 
             // time
+            stat.st_atim.tv_sec.set(savedStat.st_atim.tv_sec.get());
             stat.st_atim.tv_nsec.set(savedStat.st_atim.tv_nsec.intValue());
-            stat.st_atim.tv_sec.set(savedStat.st_atim.tv_sec.floatValue());
 
             stat.st_atim.tv_sec.set(savedStat.st_atim.tv_sec.get());
             stat.st_atim.tv_nsec.set(savedStat.st_atim.tv_nsec.intValue());
@@ -96,11 +96,12 @@ public class MemoryFS extends FileSystemStub {
         //      name - the file name (with no "/" at the beginning)
         //      stbuf - the FileStat information for the file
         //      off - just
-        for(String node:iNodeTable.entries()){
+        MemoryINodeTable table = getParentDir(path);
+        for(String node:table.entries()){
             boolean is_valid = true;
             String[] nodeSplit = node.split("(?<=/)");
             String[] pathSplit = path.split("(?<=/)");
-            
+
             for(int i=0;i<pathSplit.length;i++){
                 if ((!nodeSplit[i].equals(pathSplit[i])) ||
                         nodeSplit.length <= pathSplit.length ||
@@ -111,9 +112,11 @@ public class MemoryFS extends FileSystemStub {
             }
 
             if(is_valid){
-                MemoryINode iNode = iNodeTable.getINode(node);
+                MemoryINode iNode = table.getINode(node);
                 filler.apply(buf, node.substring(node.lastIndexOf('/') + 1), iNode.getStat(), 0);
             }
+            filler.apply(buf,".",null,0);
+            filler.apply(buf,"..",null,0);
         }
         return 0;
     }
@@ -130,15 +133,15 @@ public class MemoryFS extends FileSystemStub {
 
     @Override
     public int read(String path, Pointer buf, @size_t long size, @off_t long offset, FuseFileInfo fi) {
-        if (!iNodeTable.containsINode(path)) {
+        MemoryINodeTable table = getParentDir(path);
+        if (!table.containsINode(path)) {
             return -ErrorCodes.ENOENT();
         }
         // you need to extract data from the content field of the inode and place it in the buffer
         // something like:
         // buf.put(0, content, offset, amount);
 
-
-        MemoryINode node = iNodeTable.getINode(path);
+        MemoryINode node = table.getINode(path);
         byte[] content = node.getContent();
         int amount = content.length - (int) offset;
 
@@ -151,7 +154,7 @@ public class MemoryFS extends FileSystemStub {
         buf.put(0,content,(int)offset,amount);
 
         if (isVisualised()) {
-            visualiser.sendINodeTable(iNodeTable);
+            visualiser.sendINodeTable(table);
         }
 
         return amount;
@@ -159,13 +162,15 @@ public class MemoryFS extends FileSystemStub {
 
     @Override
     public int write(String path, Pointer buf, @size_t long size, @off_t long offset, FuseFileInfo fi) {
-        if (!iNodeTable.containsINode(path)) {
+        MemoryINodeTable table = getParentDir(path);
+        if (!table.containsINode(path)) {
             return -ErrorCodes.ENOENT(); // ENONET();
         }
         // similar to read but you get data from the buffer like:
         // buf.get(0, content, offset, size);
 
-        MemoryINode node = iNodeTable.getINode(path);
+
+        MemoryINode node = table.getINode(path);
         byte[] content = node.getContent();
 
         node.setContent(java.util.Arrays.copyOf(content, node.getContent().length+(int)size));
@@ -178,7 +183,7 @@ public class MemoryFS extends FileSystemStub {
         buf.get(0, node.getContent(), (int) offset, (int) size);
 
         if (isVisualised()) {
-            visualiser.sendINodeTable(iNodeTable);
+            visualiser.sendINodeTable(table);
         }
 
         return (int) size;
@@ -209,7 +214,8 @@ public class MemoryFS extends FileSystemStub {
 
     @Override
     public int mknod(String path, @mode_t long mode, @dev_t long rdev) {
-        if (iNodeTable.containsINode(path)) {
+        MemoryINodeTable table = getParentDir(path);
+        if (table.containsINode(path)) {
             return -ErrorCodes.EEXIST();
         }
 
@@ -218,10 +224,10 @@ public class MemoryFS extends FileSystemStub {
 
         FileStat stat = createFileStat(mockINode.getContent().length, mode, rdev);
         mockINode.setStat(stat);
-        iNodeTable.updateINode(path, mockINode);
+        table.updateINode(path, mockINode);
 
         if (isVisualised()) {
-            visualiser.sendINodeTable(iNodeTable);
+            visualiser.sendINodeTable(table);
         }
 
         return 0;
@@ -247,38 +253,37 @@ public class MemoryFS extends FileSystemStub {
     
     @Override
     public int link(java.lang.String oldpath, java.lang.String newpath) {
+        MemoryINodeTable table = getParentDir(oldpath);
 
-
-        if (!iNodeTable.containsINode(oldpath) && !iNodeTable.containsINode(newpath)) {
+        if (!table.containsINode(oldpath) && !table.containsINode(newpath)) {
             return -ErrorCodes.ENOENT(); // ENONET();
         }
 
-        MemoryINode node = iNodeTable.getINode(oldpath);
+        MemoryINode node = table.getINode(oldpath);
+
         FileStat stat = node.getStat();
         stat.st_nlink.set(stat.st_nlink.intValue() + 1);
-        iNodeTable.updateINode(newpath,node);
-
+        table.updateINode(newpath,node);
         return 0;
     }
 
     @Override
     public int unlink(String path) {
-        if (!iNodeTable.containsINode(path)) {
+        MemoryINodeTable table = getParentDir(path);
+        if (!table.containsINode(path)) {
             return -ErrorCodes.ENONET();
         }
         // delete the file if there are no more hard links
-
-        MemoryINode node = iNodeTable.getINode(path);
+        MemoryINode node = table.getINode(path);
         FileStat stat = node.getStat();
 
         stat.st_nlink.set(stat.st_nlink.intValue() - 1 );
-        iNodeTable.removeINode(path);
+        table.removeINode(path);
 
         return 0;
     }
 
-
-    public MemoryINodeTable getParentDir(String path){
+    private MemoryINodeTable getParentDir(String path){
         String[] items = path.split("/");
 
         List<String> strList = new ArrayList<>();
@@ -288,7 +293,7 @@ public class MemoryFS extends FileSystemStub {
             }
         }
         MemoryINodeDir node;
-        MemoryINodeTable table = iNodeTable;
+        MemoryINodeTable table = root.getiNodeTable();
         StringBuilder currentPath = new StringBuilder();
         for (int i =0; i<strList.size() -1 ; i++){
             currentPath.append("/").append(strList.get(i));
@@ -301,15 +306,15 @@ public class MemoryFS extends FileSystemStub {
 
     @Override
     public int mkdir(String path, long mode) {
-        if (iNodeTable.containsINode(path)) {
+        MemoryINodeTable table = getParentDir(path);
+        if (table.containsINode(path)) {
             return -ErrorCodes.EEXIST();
         }
         MemoryINode node = new MemoryINodeDir();
         FileStat stat = createFileStat(node.getContent().length, mode|FileStat.S_IFDIR, 0);
         node.setStat(stat);
 
-        MemoryINodeTable dir = getParentDir(path);
-        dir.updateINode(path,node);
+        table.updateINode(path,node);
 
         return 0;
     }
@@ -393,7 +398,7 @@ public class MemoryFS extends FileSystemStub {
     public static void main(String[] args) {
         MemoryFS fs = new MemoryFS();
         try {
-            fs.mount(args, true);
+            fs.mount(args, false);
         } finally {
             fs.unmount();
         }
