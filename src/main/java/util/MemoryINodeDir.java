@@ -1,5 +1,7 @@
 package util;
 
+import com.github.lukethompsxn.edufuse.struct.FileStat;
+
 import java.util.Set;
 
 public class MemoryINodeDir extends MemoryINode{
@@ -9,6 +11,13 @@ public class MemoryINodeDir extends MemoryINode{
     public MemoryINodeDir(){
         super();
     }
+
+    public MemoryINodeTable getiNodeTable() {
+
+        FileStat stat = this.getStat();
+        return iNodeTable;
+    }
+
 
     public MemoryINode getINode(String path) {
         return iNodeTable.getINode(path);

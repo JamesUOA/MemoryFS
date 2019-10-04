@@ -214,7 +214,6 @@ public class MemoryFS extends FileSystemStub {
 
         FileStat stat = createFileStat(mockINode.getContent().length, mode, rdev);
         mockINode.setStat(stat);
-
         iNodeTable.updateINode(path, mockINode);
 
         if (isVisualised()) {
@@ -274,12 +273,40 @@ public class MemoryFS extends FileSystemStub {
         return 0;
     }
 
+
+    public MemoryINodeTable getParentDir(String path){
+        String[] items = path.split("/");
+
+        List<String> strList = new ArrayList<>();
+        for (int i=0; i<items.length-1;i++){
+            if(!items[i].equals("")){
+                strList.add(items[i]);
+            }
+        }
+        MemoryINodeDir node;
+        MemoryINodeTable table = iNodeTable;
+        StringBuilder currentPath = new StringBuilder();
+        for (int i =0; i<strList.size() -1 ; i++){
+            currentPath.append("/").append(strList.get(i));
+            node = (MemoryINodeDir) table.getINode(currentPath.toString());
+            table = node.getiNodeTable();
+
+        }
+        return table;
+    }
+
     @Override
     public int mkdir(String path, long mode) {
+        if (iNodeTable.containsINode(path)) {
+            return -ErrorCodes.EEXIST();
+        }
         MemoryINode node = new MemoryINodeDir();
         FileStat stat = createFileStat(node.getContent().length, mode|FileStat.S_IFDIR, 0);
         node.setStat(stat);
-        iNodeTable.updateINode(path, node);
+
+        MemoryINodeTable dir = getParentDir(path);
+        dir.updateINode(path,node);
+
         return 0;
     }
 
